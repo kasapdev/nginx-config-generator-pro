@@ -1,7 +1,9 @@
 /* =====================================================================
    Nginx Config Generator Pro — app.js
-   Builds real, syntactically valid nginx server-block config from
-   toggleable sections. Classic script, depends on window.WUS (core.js).
+   Visually builds real, syntactically-correct nginx server-block
+   snippets (static/SPA, reverse proxy, SSL/TLS, rate limiting) and
+   combines the enabled ones into one downloadable nginx.conf.
+   Classic script (no modules). Depends on window.WUS (core.js).
    ===================================================================== */
 (function () {
   'use strict';
@@ -9,316 +11,306 @@
   var WUS = window.WUS;
   var STORE_KEY = 'nginxcfg.state';
 
-  /* ----------------------------- DOM refs ---------------------------- */
-  var serverName = document.getElementById('serverName');
-  var httpPort = document.getElementById('httpPort');
+  var MODERN_CIPHERS =
+    'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:' +
+    'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:' +
+    'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:' +
+    'DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
 
-  var toggleStatic = document.getElementById('toggleStatic');
-  var toggleProxy = document.getElementById('toggleProxy');
-  var toggleSsl = document.getElementById('toggleSsl');
+  /* ----------------------------- DOM refs ---------------------------- */
+  var serverNameEl = document.getElementById('serverName');
+  var httpPortEl   = document.getElementById('httpPort');
+
+  var toggleStatic    = document.getElementById('toggleStatic');
+  var toggleProxy     = document.getElementById('toggleProxy');
+  var toggleSsl       = document.getElementById('toggleSsl');
   var toggleRateLimit = document.getElementById('toggleRateLimit');
 
-  var panelStatic = document.getElementById('panelStatic');
-  var panelProxy = document.getElementById('panelProxy');
-  var panelSsl = document.getElementById('panelSsl');
+  var panelStatic    = document.getElementById('panelStatic');
+  var panelProxy     = document.getElementById('panelProxy');
+  var panelSsl       = document.getElementById('panelSsl');
   var panelRateLimit = document.getElementById('panelRateLimit');
-  var emptyOptions = document.getElementById('emptyOptions');
+  var emptyOptions   = document.getElementById('emptyOptions');
 
-  var staticRoot = document.getElementById('staticRoot');
-  var staticIndex = document.getElementById('staticIndex');
+  var staticRoot        = document.getElementById('staticRoot');
+  var staticIndex       = document.getElementById('staticIndex');
   var staticSpaFallback = document.getElementById('staticSpaFallback');
 
-  var proxyUpstream = document.getElementById('proxyUpstream');
+  var proxyUpstream  = document.getElementById('proxyUpstream');
   var proxyWebsocket = document.getElementById('proxyWebsocket');
 
-  var sslCert = document.getElementById('sslCert');
-  var sslKey = document.getElementById('sslKey');
+  var sslCert     = document.getElementById('sslCert');
+  var sslKey      = document.getElementById('sslKey');
   var sslRedirect = document.getElementById('sslRedirect');
 
   var rlZoneName = document.getElementById('rlZoneName');
-  var rlRate = document.getElementById('rlRate');
-  var rlBurst = document.getElementById('rlBurst');
+  var rlRate     = document.getElementById('rlRate');
+  var rlBurst    = document.getElementById('rlBurst');
+
+  var statusBadge = document.getElementById('statusBadge');
+  var statusText  = document.getElementById('statusText');
 
   var outputCode = document.getElementById('outputCode');
   var emptyState = document.getElementById('emptyState');
-  var statusBadge = document.getElementById('statusBadge');
-  var statusText = document.getElementById('statusText');
 
+  var btnCopy     = document.getElementById('btnCopy');
+  var btnDownload = document.getElementById('btnDownload');
+
+  /* The most recently generated config text (for copy / download). */
   var lastOutput = '';
 
   /* =================================================================
-     Helpers
+     HELPERS
      ================================================================= */
-  function indent(str, spaces) {
-    var pad = new Array(spaces + 1).join(' ');
-    return str.split('\n').map(function (l) { return l ? pad + l : l; }).join('\n');
+  function serverNames() {
+    return (serverNameEl.value || '').trim() || 'example.com';
   }
-
-  function names() {
-    var v = (serverName.value || '').trim();
-    return v || 'example.com';
+  function httpPort() {
+    var p = parseInt(httpPortEl.value, 10);
+    return (p >= 1 && p <= 65535) ? String(p) : '80';
   }
-
-  function httpListenPort() {
-    var p = Number(httpPort.value);
-    return (p >= 1 && p <= 65535) ? p : 80;
-  }
+  function indent(n) { return new Array(n + 1).join('    '); }
 
   /* =================================================================
-     Block builders — each returns a string, or '' if inputs are unusable
+     BLOCK BUILDERS — each returns an array of lines (no trailing blank)
      ================================================================= */
-  function buildStaticServer() {
-    var root = (staticRoot.value || '/var/www/html').trim();
-    var index = (staticIndex.value || 'index.html').trim();
-    var tryFiles = staticSpaFallback.checked
-      ? 'try_files $uri $uri/ /index.html;'
-      : 'try_files $uri $uri/ =404;';
-
+  function staticLocationLines(depth) {
+    var idx = (staticIndex.value || '').trim() || 'index.html';
+    var spa = staticSpaFallback.checked;
+    var tryFiles = spa ? ('$uri $uri/ /' + idx) : '$uri $uri/ =404';
+    var pad = indent(depth);
     return [
-      'server {',
-      '    listen ' + httpListenPort() + ';',
-      '    listen [::]:' + httpListenPort() + ';',
-      '    server_name ' + names() + ';',
-      '',
-      '    root ' + root + ';',
-      '    index ' + index + ';',
-      '',
-      '    location / {',
-      '        ' + tryFiles,
-      '    }',
-      '}'
-    ].join('\n');
+      pad + 'location / {',
+      pad + '    try_files ' + tryFiles + ';',
+      pad + '}'
+    ];
   }
 
-  function buildProxyLocation() {
-    var upstream = (proxyUpstream.value || '127.0.0.1:3000').trim();
-    var lines = [
-      'location / {',
-      '    proxy_pass http://' + upstream + ';',
-      '    proxy_set_header Host $host;',
-      '    proxy_set_header X-Real-IP $remote_addr;',
-      '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
-      '    proxy_set_header X-Forwarded-Proto $scheme;',
-      '    proxy_http_version 1.1;'
-    ];
-    if (proxyWebsocket.checked) {
-      lines.push('    proxy_set_header Upgrade $http_upgrade;');
-      lines.push('    proxy_set_header Connection "upgrade";');
-    }
+  function buildStaticBlock() {
+    var root = (staticRoot.value || '').trim() || '/var/www/html';
+    var idx  = (staticIndex.value || '').trim() || 'index.html';
+    var spa  = staticSpaFallback.checked;
+    var lines = [];
+    lines.push('# Static site' + (spa ? ' (SPA — unknown routes fall back to ' + idx + ')' : ' (plain static, unknown routes 404)'));
+    lines.push('server {');
+    lines.push('    listen ' + httpPort() + ';');
+    lines.push('    listen [::]:' + httpPort() + ';');
+    lines.push('    server_name ' + serverNames() + ';');
+    lines.push('    root ' + root + ';');
+    lines.push('    index ' + idx + ';');
+    lines.push('');
+    lines = lines.concat(staticLocationLines(1));
     lines.push('}');
-    return lines.join('\n');
+    return lines;
   }
 
-  function buildProxyServer() {
-    return [
-      'server {',
-      '    listen ' + httpListenPort() + ';',
-      '    listen [::]:' + httpListenPort() + ';',
-      '    server_name ' + names() + ';',
-      '',
-      indent(buildProxyLocation(), 4),
-      '}'
-    ].join('\n');
+  function proxyLocationLines(depth) {
+    var upstream = (proxyUpstream.value || '').trim() || '127.0.0.1:3000';
+    var ws = proxyWebsocket.checked;
+    var pad = indent(depth);
+    var lines = [];
+    lines.push(pad + 'location / {');
+    lines.push(pad + '    proxy_pass http://' + upstream + ';');
+    lines.push(pad + '    proxy_set_header Host $host;');
+    lines.push(pad + '    proxy_set_header X-Real-IP $remote_addr;');
+    lines.push(pad + '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;');
+    lines.push(pad + '    proxy_set_header X-Forwarded-Proto $scheme;');
+    if (ws) {
+      lines.push(pad + '    proxy_http_version 1.1;');
+      lines.push(pad + '    proxy_set_header Upgrade $http_upgrade;');
+      lines.push(pad + '    proxy_set_header Connection "upgrade";');
+    }
+    lines.push(pad + '}');
+    return lines;
   }
 
-  function buildSslServer(rateLimitLocationSnippet) {
-    var cert = (sslCert.value || '/etc/letsencrypt/live/example.com/fullchain.pem').trim();
-    var key = (sslKey.value || '/etc/letsencrypt/live/example.com/privkey.pem').trim();
+  function buildProxyBlock() {
+    var lines = [];
+    lines.push('# Reverse proxy');
+    lines.push('server {');
+    lines.push('    listen ' + httpPort() + ';');
+    lines.push('    listen [::]:' + httpPort() + ';');
+    lines.push('    server_name ' + serverNames() + ';');
+    lines.push('');
+    lines = lines.concat(proxyLocationLines(1));
+    lines.push('}');
+    return lines;
+  }
 
-    var lines = [
-      'server {',
-      '    listen 443 ssl http2;',
-      '    listen [::]:443 ssl http2;',
-      '    server_name ' + names() + ';',
-      '',
-      '    ssl_certificate ' + cert + ';',
-      '    ssl_certificate_key ' + key + ';',
-      '    ssl_protocols TLSv1.2 TLSv1.3;',
-      '    ssl_prefer_server_ciphers off;',
-      '    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;',
-      '    ssl_session_timeout 1d;',
-      '    ssl_session_cache shared:SSL:10m;',
-      '    ssl_session_tickets off;',
-      '',
-      '    add_header Strict-Transport-Security "max-age=63072000" always;',
-      ''
-    ];
+  function buildSslBlock() {
+    var cert = (sslCert.value || '').trim() || '/etc/letsencrypt/live/example.com/fullchain.pem';
+    var key  = (sslKey.value  || '').trim() || '/etc/letsencrypt/live/example.com/privkey.pem';
+    var redirect = sslRedirect.checked;
 
-    if (toggleProxy.checked) {
-      lines.push(indent(buildProxyLocation(), 4));
-    } else if (toggleStatic.checked) {
-      var root = (staticRoot.value || '/var/www/html').trim();
-      var index = (staticIndex.value || 'index.html').trim();
-      var tryFiles = staticSpaFallback.checked
-        ? 'try_files $uri $uri/ /index.html;'
-        : 'try_files $uri $uri/ =404;';
+    var lines = [];
+    lines.push('# SSL/TLS (HTTPS)');
+    lines.push('server {');
+    lines.push('    listen 443 ssl;');
+    lines.push('    listen [::]:443 ssl;');
+    lines.push('    http2 on;');
+    lines.push('    server_name ' + serverNames() + ';');
+    lines.push('');
+    lines.push('    ssl_certificate     ' + cert + ';');
+    lines.push('    ssl_certificate_key ' + key + ';');
+    lines.push('    ssl_protocols TLSv1.2 TLSv1.3;');
+    lines.push('    ssl_ciphers ' + MODERN_CIPHERS + ';');
+    lines.push('    ssl_prefer_server_ciphers off;');
+    lines.push('    ssl_session_cache shared:SSL:10m;');
+    lines.push('    ssl_session_timeout 10m;');
+    lines.push('');
+
+    if (toggleStatic.checked) {
+      var root = (staticRoot.value || '').trim() || '/var/www/html';
+      var idx  = (staticIndex.value || '').trim() || 'index.html';
       lines.push('    root ' + root + ';');
-      lines.push('    index ' + index + ';');
+      lines.push('    index ' + idx + ';');
       lines.push('');
-      lines.push('    location / {');
-      if (rateLimitLocationSnippet) lines.push(indent(rateLimitLocationSnippet, 8));
-      lines.push('        ' + tryFiles);
-      lines.push('    }');
+      lines = lines.concat(staticLocationLines(1));
+    } else if (toggleProxy.checked) {
+      lines = lines.concat(proxyLocationLines(1));
     } else {
       lines.push('    location / {');
-      if (rateLimitLocationSnippet) lines.push(indent(rateLimitLocationSnippet, 8));
-      lines.push('        return 200 "OK";');
+      lines.push('        # Add your site config here (root + try_files, or proxy_pass)');
       lines.push('    }');
     }
-
     lines.push('}');
-    return lines.join('\n');
+
+    if (redirect) {
+      lines.push('');
+      lines.push('# HTTP → HTTPS redirect');
+      lines.push('server {');
+      lines.push('    listen ' + httpPort() + ';');
+      lines.push('    listen [::]:' + httpPort() + ';');
+      lines.push('    server_name ' + serverNames() + ';');
+      lines.push('    return 301 https://$host$request_uri;');
+      lines.push('}');
+    }
+    return lines;
   }
 
-  function buildHttpRedirectServer() {
-    return [
-      'server {',
-      '    listen ' + httpListenPort() + ';',
-      '    listen [::]:' + httpListenPort() + ';',
-      '    server_name ' + names() + ';',
-      '',
-      '    return 301 https://$host$request_uri;',
-      '}'
-    ].join('\n');
-  }
+  function buildRateLimitBlock() {
+    var zone  = (rlZoneName.value || '').trim() || 'mylimit';
+    var rate  = parseInt(rlRate.value, 10) || 10;
+    var burst = parseInt(rlBurst.value, 10) || 20;
 
-  function rateLimitZoneLine() {
-    var zone = (rlZoneName.value || 'mylimit').trim();
-    var rate = Number(rlRate.value) || 10;
-    return 'limit_req_zone $binary_remote_addr zone=' + zone + ':10m rate=' + rate + 'r/s;';
-  }
-
-  function rateLimitLocationLine() {
-    var zone = (rlZoneName.value || 'mylimit').trim();
-    var burst = Number(rlBurst.value) || 0;
-    return 'limit_req zone=' + zone + ' burst=' + burst + ' nodelay;';
+    var lines = [];
+    lines.push('# Rate limiting — limit_req_zone belongs in the http {} context');
+    lines.push('# (e.g. /etc/nginx/conf.d/rate-limit.conf, included from http {})');
+    lines.push('limit_req_zone $binary_remote_addr zone=' + zone + ':10m rate=' + rate + 'r/s;');
+    lines.push('');
+    lines.push('# Apply inside a server or location block:');
+    lines.push('location / {');
+    lines.push('    limit_req zone=' + zone + ' burst=' + burst + ' nodelay;');
+    lines.push('}');
+    return lines;
   }
 
   /* =================================================================
-     MAIN COMPOSER
+     SYNTAX HIGHLIGHTING (line-based: comments, directives, vars, strings, braces)
      ================================================================= */
-  function generate() {
-    var anyEnabled = toggleStatic.checked || toggleProxy.checked || toggleSsl.checked || toggleRateLimit.checked;
+  function highlightLine(line) {
+    var trimmed = line.replace(/^\s+/, '');
+    var leadingWs = line.slice(0, line.length - trimmed.length);
 
-    panelStatic.hidden = !toggleStatic.checked;
-    panelProxy.hidden = !toggleProxy.checked;
-    panelSsl.hidden = !toggleSsl.checked;
-    panelRateLimit.hidden = !toggleRateLimit.checked;
-    emptyOptions.hidden = anyEnabled;
-
-    var count = [toggleStatic.checked, toggleProxy.checked, toggleSsl.checked, toggleRateLimit.checked]
-      .filter(Boolean).length;
-    statusBadge.classList.toggle('is-active', count > 0);
-    statusText.textContent = count + (count === 1 ? ' block enabled' : ' blocks enabled');
-
-    if (!anyEnabled) {
-      lastOutput = '';
-      outputCode.textContent = '';
-      emptyState.classList.remove('is-hidden');
-      persist();
-      return;
+    if (trimmed.charAt(0) === '#') {
+      return WUS.escapeHtml(leadingWs) + '<span class="tok-comment">' + WUS.escapeHtml(trimmed) + '</span>';
     }
 
-    var blocks = [];
-    var httpCtxLines = [];
-
-    if (toggleRateLimit.checked) {
-      httpCtxLines.push('# Place in the http {} context (e.g. nginx.conf or conf.d/*.conf)');
-      httpCtxLines.push(rateLimitZoneLine());
-    }
-    if (httpCtxLines.length) {
-      blocks.push(httpCtxLines.join('\n'));
+    var dirMatch = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmed);
+    var prefix = '';
+    var rest = trimmed;
+    if (dirMatch) {
+      prefix = '<span class="tok-directive">' + WUS.escapeHtml(dirMatch[1]) + '</span>';
+      rest = trimmed.slice(dirMatch[1].length);
     }
 
-    var rlLocationSnippet = toggleRateLimit.checked ? rateLimitLocationLine() : '';
-
-    if (toggleSsl.checked) {
-      if (sslRedirect.checked) blocks.push(buildHttpRedirectServer());
-      blocks.push(buildSslServer(rlLocationSnippet));
-    } else if (toggleProxy.checked) {
-      var proxyServer = buildProxyServer();
-      if (rlLocationSnippet) {
-        // splice the rate-limit line into the location block
-        proxyServer = proxyServer.replace(
-          'proxy_pass',
-          rlLocationSnippet + '\n        proxy_pass'
-        );
-      }
-      blocks.push(proxyServer);
-    } else if (toggleStatic.checked) {
-      var staticServer = buildStaticServer();
-      if (rlLocationSnippet) {
-        staticServer = staticServer.replace(
-          /(location \/ \{\n)/,
-          '$1        ' + rlLocationSnippet + '\n'
-        );
-      }
-      blocks.push(staticServer);
-    } else if (toggleRateLimit.checked) {
-      blocks.push([
-        'server {',
-        '    listen ' + httpListenPort() + ';',
-        '    server_name ' + names() + ';',
-        '',
-        '    location / {',
-        '        ' + rlLocationSnippet,
-        '    }',
-        '}'
-      ].join('\n'));
-    }
-
-    var out = blocks.join('\n\n');
-    lastOutput = out;
-    outputCode.innerHTML = highlight(out);
-    emptyState.classList.add('is-hidden');
-    persist();
-  }
-
-  /* =================================================================
-     Tiny syntax highlighter for the generated config
-     ================================================================= */
-  function highlight(text) {
-    var re = /(#.*$)|("(?:[^"\\]|\\.)*")|(\$[a-zA-Z_][a-zA-Z0-9_]*)|([{}])/gm;
+    var re = /(\$[A-Za-z_][A-Za-z0-9_]*)|("[^"]*")|([{}])/g;
     var out = '';
     var lastIndex = 0;
     var m;
-    while ((m = re.exec(text)) !== null) {
-      if (m.index > lastIndex) out += WUS.escapeHtml(text.slice(lastIndex, m.index));
+    while ((m = re.exec(rest)) !== null) {
+      if (m.index > lastIndex) out += WUS.escapeHtml(rest.slice(lastIndex, m.index));
       lastIndex = re.lastIndex;
-      if (m[1] !== undefined) out += '<span class="tok-comment">' + WUS.escapeHtml(m[1]) + '</span>';
+      if (m[1] !== undefined) out += '<span class="tok-var">' + WUS.escapeHtml(m[1]) + '</span>';
       else if (m[2] !== undefined) out += '<span class="tok-string">' + WUS.escapeHtml(m[2]) + '</span>';
-      else if (m[3] !== undefined) out += '<span class="tok-var">' + WUS.escapeHtml(m[3]) + '</span>';
-      else if (m[4] !== undefined) out += '<span class="tok-brace">' + WUS.escapeHtml(m[4]) + '</span>';
+      else if (m[3] !== undefined) out += '<span class="tok-brace">' + WUS.escapeHtml(m[3]) + '</span>';
     }
-    if (lastIndex < text.length) out += WUS.escapeHtml(text.slice(lastIndex));
-    return out;
+    if (lastIndex < rest.length) out += WUS.escapeHtml(rest.slice(lastIndex));
+
+    return WUS.escapeHtml(leadingWs) + prefix + out;
+  }
+
+  function highlight(text) {
+    return text.split('\n').map(highlightLine).join('\n');
   }
 
   /* =================================================================
-     Copy / Download
+     MAIN RENDER
+     ================================================================= */
+  function render() {
+    // Panel visibility follows the toggles.
+    panelStatic.hidden    = !toggleStatic.checked;
+    panelProxy.hidden     = !toggleProxy.checked;
+    panelSsl.hidden       = !toggleSsl.checked;
+    panelRateLimit.hidden = !toggleRateLimit.checked;
+
+    var enabledCount = [toggleStatic, toggleProxy, toggleSsl, toggleRateLimit]
+      .filter(function (t) { return t.checked; }).length;
+
+    emptyOptions.hidden = enabledCount > 0;
+
+    // Build combined config.
+    var blocks = [];
+    if (toggleStatic.checked)    blocks.push(buildStaticBlock());
+    if (toggleProxy.checked)     blocks.push(buildProxyBlock());
+    if (toggleSsl.checked)       blocks.push(buildSslBlock());
+    if (toggleRateLimit.checked) blocks.push(buildRateLimitBlock());
+
+    var text = blocks.map(function (b) { return b.join('\n'); }).join('\n\n');
+    lastOutput = text;
+
+    if (text) {
+      outputCode.innerHTML = highlight(text);
+      emptyState.classList.add('is-hidden');
+    } else {
+      outputCode.textContent = '';
+      emptyState.classList.remove('is-hidden');
+    }
+
+    // Status badge.
+    statusBadge.classList.toggle('is-active', enabledCount > 0);
+    statusText.textContent = enabledCount + (enabledCount === 1 ? ' block enabled' : ' blocks enabled');
+
+    persistDebounced();
+  }
+
+  /* =================================================================
+     COPY / DOWNLOAD
      ================================================================= */
   function copyOutput() {
-    if (!lastOutput) { WUS.toast('Enable a block first', 'error'); return; }
+    if (!lastOutput) { WUS.toast('Nothing to copy — enable a block first', 'error'); return; }
     WUS.copy(lastOutput, 'Config copied to clipboard');
   }
 
   function downloadOutput() {
-    if (!lastOutput) { WUS.toast('Enable a block first', 'error'); return; }
+    if (!lastOutput) { WUS.toast('Nothing to download — enable a block first', 'error'); return; }
     WUS.download('nginx.conf', lastOutput, 'text/plain;charset=utf-8');
     WUS.toast('Downloaded nginx.conf');
   }
 
   /* =================================================================
-     PERSISTENCE
+     PERSISTENCE — debounced save of all fields + toggles, restore on load
      ================================================================= */
   function persist() {
     WUS.store.set(STORE_KEY, {
-      serverName: serverName.value,
-      httpPort: httpPort.value,
-      toggleStatic: toggleStatic.checked,
-      toggleProxy: toggleProxy.checked,
-      toggleSsl: toggleSsl.checked,
-      toggleRateLimit: toggleRateLimit.checked,
+      serverName: serverNameEl.value,
+      httpPort: httpPortEl.value,
+      toggles: {
+        staticSite: toggleStatic.checked,
+        proxy: toggleProxy.checked,
+        ssl: toggleSsl.checked,
+        rateLimit: toggleRateLimit.checked
+      },
       staticRoot: staticRoot.value,
       staticIndex: staticIndex.value,
       staticSpaFallback: staticSpaFallback.checked,
@@ -332,39 +324,49 @@
       rlBurst: rlBurst.value
     });
   }
+  var persistDebounced = WUS.debounce(persist, 400);
 
   function restore() {
-    var s = WUS.store.get(STORE_KEY, null);
-    if (!s) return;
-    if (typeof s.serverName === 'string') serverName.value = s.serverName;
-    if (s.httpPort) httpPort.value = s.httpPort;
-    toggleStatic.checked = !!s.toggleStatic;
-    toggleProxy.checked = !!s.toggleProxy;
-    toggleSsl.checked = !!s.toggleSsl;
-    toggleRateLimit.checked = !!s.toggleRateLimit;
-    if (typeof s.staticRoot === 'string') staticRoot.value = s.staticRoot;
-    if (typeof s.staticIndex === 'string') staticIndex.value = s.staticIndex;
-    staticSpaFallback.checked = !!s.staticSpaFallback;
-    if (typeof s.proxyUpstream === 'string') proxyUpstream.value = s.proxyUpstream;
-    proxyWebsocket.checked = s.proxyWebsocket !== false;
-    if (typeof s.sslCert === 'string') sslCert.value = s.sslCert;
-    if (typeof s.sslKey === 'string') sslKey.value = s.sslKey;
-    sslRedirect.checked = s.sslRedirect !== false;
-    if (typeof s.rlZoneName === 'string') rlZoneName.value = s.rlZoneName;
-    if (s.rlRate) rlRate.value = s.rlRate;
-    if (s.rlBurst) rlBurst.value = s.rlBurst;
+    var saved = WUS.store.get(STORE_KEY, null);
+    if (!saved) { render(); return; }
+
+    if (typeof saved.serverName === 'string') serverNameEl.value = saved.serverName;
+    if (saved.httpPort) httpPortEl.value = saved.httpPort;
+
+    if (saved.toggles) {
+      toggleStatic.checked    = !!saved.toggles.staticSite;
+      toggleProxy.checked     = !!saved.toggles.proxy;
+      toggleSsl.checked       = !!saved.toggles.ssl;
+      toggleRateLimit.checked = !!saved.toggles.rateLimit;
+    }
+
+    if (typeof saved.staticRoot === 'string') staticRoot.value = saved.staticRoot;
+    if (typeof saved.staticIndex === 'string') staticIndex.value = saved.staticIndex;
+    staticSpaFallback.checked = !!saved.staticSpaFallback;
+
+    if (typeof saved.proxyUpstream === 'string') proxyUpstream.value = saved.proxyUpstream;
+    proxyWebsocket.checked = saved.proxyWebsocket !== undefined ? !!saved.proxyWebsocket : true;
+
+    if (typeof saved.sslCert === 'string') sslCert.value = saved.sslCert;
+    if (typeof saved.sslKey === 'string') sslKey.value = saved.sslKey;
+    sslRedirect.checked = saved.sslRedirect !== undefined ? !!saved.sslRedirect : true;
+
+    if (typeof saved.rlZoneName === 'string') rlZoneName.value = saved.rlZoneName;
+    if (saved.rlRate) rlRate.value = saved.rlRate;
+    if (saved.rlBurst) rlBurst.value = saved.rlBurst;
+
+    render();
   }
 
   /* =================================================================
      SHORTCUTS HELP MODAL
      ================================================================= */
   var helpBackdrop = document.getElementById('helpBackdrop');
-  var helpClose = document.getElementById('helpClose');
+  var helpClose    = document.getElementById('helpClose');
   var shortcutRows = document.getElementById('shortcutRows');
 
   var SHORTCUTS = [
     { keys: ['mod', 'S'], desc: 'Download nginx.conf' },
-    { keys: ['mod', 'C'], desc: 'Copy config (when output focused)' },
     { keys: ['?'], desc: 'Show this help' },
     { keys: ['Esc'], desc: 'Close dialog' }
   ];
@@ -382,35 +384,34 @@
   function closeHelp() { helpBackdrop.hidden = true; }
 
   helpClose.addEventListener('click', closeHelp);
-  helpBackdrop.addEventListener('click', function (e) { if (e.target === helpBackdrop) closeHelp(); });
+  helpBackdrop.addEventListener('click', function (e) {
+    if (e.target === helpBackdrop) closeHelp();
+  });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !helpBackdrop.hidden) closeHelp();
   });
+
   var helpBtns = document.querySelectorAll('[data-shortcut-help]');
   for (var i = 0; i < helpBtns.length; i++) helpBtns[i].addEventListener('click', openHelp);
 
   /* =================================================================
      WIRING
      ================================================================= */
-  var inputsToWatch = [
-    serverName, httpPort, toggleStatic, toggleProxy, toggleSsl, toggleRateLimit,
-    staticRoot, staticIndex, staticSpaFallback,
-    proxyUpstream, proxyWebsocket,
-    sslCert, sslKey, sslRedirect,
-    rlZoneName, rlRate, rlBurst
-  ];
-  inputsToWatch.forEach(function (el) {
-    var evt = (el.type === 'checkbox') ? 'change' : 'input';
-    el.addEventListener(evt, generate);
+  [serverNameEl, httpPortEl, staticRoot, staticIndex, proxyUpstream,
+   sslCert, sslKey, rlZoneName, rlRate, rlBurst].forEach(function (el) {
+    el.addEventListener('input', render);
   });
 
-  document.getElementById('btnCopy').addEventListener('click', copyOutput);
-  document.getElementById('btnDownload').addEventListener('click', downloadOutput);
+  [toggleStatic, toggleProxy, toggleSsl, toggleRateLimit,
+   staticSpaFallback, proxyWebsocket, sslRedirect].forEach(function (el) {
+    el.addEventListener('change', render);
+  });
 
+  btnCopy.addEventListener('click', copyOutput);
+  btnDownload.addEventListener('click', downloadOutput);
+
+  /* Global keyboard shortcuts via WUS. */
   WUS.registerShortcut('mod+s', function () { downloadOutput(); }, 'Download nginx.conf');
-  WUS.registerShortcut('mod+c', function () {
-    if (document.activeElement === document.getElementById('output')) copyOutput();
-  }, 'Copy config');
   WUS.registerShortcut('?', function () { openHelp(); }, 'Show shortcuts');
 
   /* =================================================================
@@ -418,5 +419,4 @@
      ================================================================= */
   buildShortcutTable();
   restore();
-  generate();
 })();

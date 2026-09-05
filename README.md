@@ -6,16 +6,16 @@ Visually build correct, production-ready nginx server blocks — fast, private, 
 
 ## Overview
 
-Nginx Config Generator Pro is part of the **Web Utility Suite**. It runs entirely client-side with no build step, no frameworks, and no network calls — open `index.html` from disk and it works. Four independent, toggleable blocks compose live into a single output pane with light syntax highlighting, ready to copy or download as `nginx.conf`.
+Nginx Config Generator Pro is part of the **Web Utility Suite**. It runs entirely client-side with no build step, no frameworks, and no network calls — open `index.html` from disk and it works. Four independent, toggleable blocks each render a real nginx snippet behind a `#` comment label; every enabled block combines live into a single output pane with light syntax highlighting, ready to copy or download as `nginx.conf`.
 
 ## Features
 
 - **Static / SPA site block** — configurable document root and index file, with a toggle between plain `try_files $uri $uri/ =404;` and SPA-style `try_files $uri $uri/ /index.html;` fallback.
-- **Reverse proxy block** — `proxy_pass` to any `host:port`, with the standard `proxy_set_header` lines (`Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) and an optional WebSocket upgrade toggle (`Upgrade`/`Connection` headers).
-- **SSL/TLS block** — certificate/key path inputs, modern `ssl_protocols` (TLSv1.2/1.3) and a Mozilla-intermediate `ssl_ciphers` string, session cache tuning, HSTS header, and an optional separate HTTP → HTTPS `301` redirect server block.
-- **Rate limiting** — `limit_req_zone` (emitted with a note that it belongs in the `http {}` context) plus a matching `limit_req` line spliced into whichever location block is active.
-- **Live composition** — enabled blocks combine into one coherent, correctly nested config as you type; disabled blocks are omitted entirely.
-- **Server name field** applies across every block that needs it.
+- **Reverse proxy block** — `proxy_pass` to any `host:port`, with the standard `proxy_set_header` lines (`Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) and an optional WebSocket upgrade toggle (`proxy_http_version 1.1;` + `Upgrade`/`Connection` headers).
+- **SSL/TLS block** — certificate/key path inputs, `listen 443 ssl;` with `http2 on;`, modern `ssl_protocols TLSv1.2 TLSv1.3;`, a real modern `ssl_ciphers` string, `ssl_prefer_server_ciphers off;`, session cache tuning, and an optional separate HTTP → HTTPS `301` redirect server block. Automatically reuses your Static or Reverse proxy settings inside the HTTPS server when those blocks are also enabled.
+- **Rate limiting** — `limit_req_zone` emitted with a note that it belongs in the `http {}` context, plus a `limit_req zone=… burst=… nodelay;` example shown in its own `location` block.
+- **Live composition** — enabled blocks combine into one output as you type, each preceded by a `#` comment label; disabled blocks are omitted entirely.
+- **Shared globals** — **server name** and **HTTP listen port** fields apply across every block that needs them.
 - **Copy** and **Download `nginx.conf`** buttons.
 - **Auto-persist** — your form state is saved to `localStorage` and restored on return.
 - **Dark & light themes**, fully responsive down to 360px, accessible, and keyboard-driven.
@@ -33,19 +33,18 @@ Then simply open `index.html` in any modern browser (double-click it, or `file:/
 
 ## Usage
 
-1. Enter your **server name / domain** at the top.
+1. Enter your **server name / domain** and **HTTP listen port** at the top.
 2. Flip on any combination of **Static / SPA site**, **Reverse proxy**, **SSL / TLS**, and **Rate limiting**.
 3. Fill in each block's fields (root path, upstream, cert paths, zone name/rate/burst) — the output updates instantly.
 4. **Copy** the config or **Download** it as `nginx.conf`, then drop it into `/etc/nginx/sites-available/` (or `conf.d/`) on your server and reload nginx.
 
 ## Keyboard Shortcuts
 
-| Action                | Shortcut                       |
-| --------------------- | ------------------------------ |
+| Action                | Shortcut                        |
+| --------------------- | -------------------------------- |
 | Download `nginx.conf` | <kbd>Ctrl/⌘</kbd> + <kbd>S</kbd> |
-| Copy config (output focused) | <kbd>Ctrl/⌘</kbd> + <kbd>C</kbd> |
-| Show shortcuts help   | <kbd>?</kbd>                    |
-| Close dialog          | <kbd>Esc</kbd>                  |
+| Show shortcuts help   | <kbd>?</kbd>                     |
+| Close dialog          | <kbd>Esc</kbd>                   |
 
 ## Screenshots
 
