@@ -1,0 +1,99 @@
+/* =====================================================================
+   Nginx Config Generator Pro — app.css
+   Extends the shared design system (base.css). Colors derive ONLY from
+   base.css CSS variables so dark + light themes both work.
+   ===================================================================== */
+
+[data-theme="light"] .icon-sun { display: none; }
+.icon-moon { display: none; }
+
+#statusBadge .status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-muted); flex: none;
+  transition: background var(--dur-2), box-shadow var(--dur-2);
+}
+#statusBadge.is-active { background: var(--success-soft); color: var(--success); border-color: transparent; }
+#statusBadge.is-active .status-dot { background: var(--success); box-shadow: 0 0 10px var(--success); }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+  align-items: start;
+}
+
+.section-panel h2.pane-title {
+  margin: 0 0 var(--space-4);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.section-panel .field { margin-bottom: var(--space-4); }
+.section-panel .field:last-child { margin-bottom: 0; }
+.section-panel .check:last-child { margin-top: var(--space-2); }
+
+.pane--output { display: flex; flex-direction: column; padding: 0; overflow: hidden; min-width: 0; position: sticky; top: var(--space-5); }
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+.pane-title { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-secondary); }
+
+.output-scroll { position: relative; flex: 1; min-height: 480px; max-height: 78vh; overflow: auto; }
+.output-code {
+  margin: 0;
+  padding: var(--space-5);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre;
+  min-height: 100%;
+  tab-size: 4;
+}
+.output-code:empty { display: none; }
+
+.output-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  pointer-events: none;
+}
+.output-empty.is-hidden { display: none; }
+
+/* Simple nginx-config syntax coloring */
+.tok-comment  { color: var(--text-muted); font-style: italic; }
+.tok-directive{ color: var(--brand-400); font-weight: 600; }
+.tok-string   { color: var(--success); }
+.tok-brace    { color: var(--accent-500); font-weight: 600; }
+.tok-var      { color: var(--accent-cyan); }
+[data-theme="light"] .tok-string { color: #15803d; }
+[data-theme="light"] .tok-var    { color: #0e7490; }
+[data-theme="light"] .tok-directive { color: var(--brand-600); }
+
+.empty { text-align: center; color: var(--text-muted); padding: var(--space-8) var(--space-4); }
+
+.shortcut-table { width: 100%; border-collapse: collapse; }
+.shortcut-table td { padding: 10px 4px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.shortcut-table tr:last-child td { border-bottom: none; }
+.shortcut-table td:last-child { text-align: right; white-space: nowrap; }
+.shortcut-table kbd + kbd { margin-left: 4px; }
+
+@media (max-width: 860px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .pane--output { position: static; }
+  .output-scroll { min-height: 320px; max-height: none; }
+}
+
+@media (max-width: 720px) {
+  #statusBadge { display: none; }
+}
