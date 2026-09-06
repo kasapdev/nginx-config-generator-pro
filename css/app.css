@@ -6,6 +6,7 @@
 
 [data-theme="light"] .icon-sun { display: none; }
 .icon-moon { display: none; }
+[data-theme="light"] .icon-moon { display: block; }
 
 #statusBadge .status-dot {
   width: 8px; height: 8px; border-radius: 50%;

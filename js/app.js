@@ -190,8 +190,10 @@
 
   function buildRateLimitBlock() {
     var zone  = (rlZoneName.value || '').trim() || 'mylimit';
-    var rate  = parseInt(rlRate.value, 10) || 10;
-    var burst = parseInt(rlBurst.value, 10) || 20;
+    var rateParsed  = parseInt(rlRate.value, 10);
+    var rate  = isNaN(rateParsed) ? 10 : WUS.clamp(rateParsed, 1, 10000);
+    var burstParsed = parseInt(rlBurst.value, 10);
+    var burst = isNaN(burstParsed) ? 20 : WUS.clamp(burstParsed, 0, 10000);
 
     var lines = [];
     lines.push('# Rate limiting — limit_req_zone belongs in the http {} context');
