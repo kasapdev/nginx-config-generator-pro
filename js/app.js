@@ -1,7 +1,8 @@
 /* =====================================================================
    Nginx Config Generator Pro — app.js
    Visually builds real, syntactically-correct nginx server-block
-   snippets (static/SPA, reverse proxy, SSL/TLS, rate limiting) and
+   snippets (static/SPA, reverse proxy w/ load-balanced upstreams and
+   caching, SSL/TLS, gzip/Brotli compression, rate limiting) and
    combines the enabled ones into one downloadable nginx.conf.
    Classic script (no modules). Depends on window.WUS (core.js).
    ===================================================================== */
@@ -17,6 +18,10 @@
     'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:' +
     'DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
 
+  var COMPRESSIBLE_TYPES =
+    'text/plain text/css application/json application/javascript ' +
+    'application/xml+rss application/xml text/javascript image/svg+xml';
+
   /* ----------------------------- DOM refs ---------------------------- */
   var serverNameEl = document.getElementById('serverName');
   var httpPortEl   = document.getElementById('httpPort');
@@ -25,11 +30,17 @@
   var toggleProxy     = document.getElementById('toggleProxy');
   var toggleSsl       = document.getElementById('toggleSsl');
   var toggleRateLimit = document.getElementById('toggleRateLimit');
+  var toggleUpstream  = document.getElementById('toggleUpstream');
+  var toggleCache     = document.getElementById('toggleCache');
+  var toggleGzip      = document.getElementById('toggleGzip');
 
   var panelStatic    = document.getElementById('panelStatic');
   var panelProxy     = document.getElementById('panelProxy');
   var panelSsl       = document.getElementById('panelSsl');
   var panelRateLimit = document.getElementById('panelRateLimit');
+  var panelUpstream  = document.getElementById('panelUpstream');
+  var panelCache     = document.getElementById('panelCache');
+  var panelGzip      = document.getElementById('panelGzip');
   var emptyOptions   = document.getElementById('emptyOptions');
 
   var staticRoot        = document.getElementById('staticRoot');
@@ -46,6 +57,22 @@
   var rlZoneName = document.getElementById('rlZoneName');
   var rlRate     = document.getElementById('rlRate');
   var rlBurst    = document.getElementById('rlBurst');
+
+  var ulName        = document.getElementById('ulName');
+  var ulMethod      = document.getElementById('ulMethod');
+  var ulServers     = document.getElementById('ulServers');
+  var ulMaxFails    = document.getElementById('ulMaxFails');
+  var ulFailTimeout = document.getElementById('ulFailTimeout');
+
+  var cachePath      = document.getElementById('cachePath');
+  var cacheZoneName  = document.getElementById('cacheZoneName');
+  var cacheZoneSize  = document.getElementById('cacheZoneSize');
+  var cacheMaxSize   = document.getElementById('cacheMaxSize');
+  var cacheInactive  = document.getElementById('cacheInactive');
+  var cacheValidOk   = document.getElementById('cacheValidOk');
+  var cacheValid404  = document.getElementById('cacheValid404');
+
+  var gzipBrotli = document.getElementById('gzipBrotli');
 
   var statusBadge = document.getElementById('statusBadge');
   var statusText  = document.getElementById('statusText');
@@ -70,6 +97,9 @@
     return (p >= 1 && p <= 65535) ? String(p) : '80';
   }
   function indent(n) { return new Array(n + 1).join('    '); }
+  function upstreamName() {
+    return (ulName.value || '').trim() || 'backend';
+  }
 
   /* =================================================================
      BLOCK BUILDERS — each returns an array of lines (no trailing blank)
@@ -104,13 +134,77 @@
     return lines;
   }
 
+  /* Real nginx upstream block: round-robin is the implicit default (no
+     directive line for it), least_conn/ip_hash are real load-balancing
+     directives. Each server line accepts optional weight=/max_fails=/
+     fail_timeout=/backup/down tokens exactly as nginx's own `server`
+     directive does inside `upstream {}`. */
+  function buildUpstreamBlock() {
+    var name = upstreamName();
+    var method = ulMethod.value;
+    var maxFailsParsed = parseInt(ulMaxFails.value, 10);
+    var maxFails = isNaN(maxFailsParsed) ? 3 : WUS.clamp(maxFailsParsed, 1, 100);
+    var failTimeout = (ulFailTimeout.value || '').trim() || '30s';
+
+    var serverLines = String(ulServers.value || '').split('\n')
+      .map(function (l) { return l.trim(); })
+      .filter(Boolean);
+    if (!serverLines.length) {
+      serverLines = ['10.0.0.1:3000 weight=3', '10.0.0.2:3000', '10.0.0.3:3000 backup'];
+    }
+
+    var lines = [];
+    lines.push('# Load-balanced upstream (define in the http {} context, alongside your server {} blocks)');
+    lines.push('upstream ' + name + ' {');
+    if (method === 'least_conn') lines.push('    least_conn;');
+    else if (method === 'ip_hash') lines.push('    ip_hash;');
+    // round-robin: no directive — it's nginx's default upstream behavior.
+
+    serverLines.forEach(function (line) {
+      var parts = line.split(/\s+/).filter(Boolean);
+      var hostport = parts[0];
+      var extras = parts.slice(1);
+      var isDownOrBackup = extras.some(function (e) { return e === 'backup' || e === 'down'; });
+      var tokens = [hostport].concat(extras);
+      if (!isDownOrBackup) {
+        var hasMaxFails = extras.some(function (e) { return /^max_fails=/.test(e); });
+        var hasFailTimeout = extras.some(function (e) { return /^fail_timeout=/.test(e); });
+        if (!hasMaxFails) tokens.push('max_fails=' + maxFails);
+        if (!hasFailTimeout) tokens.push('fail_timeout=' + failTimeout);
+      }
+      lines.push('    server ' + tokens.join(' ') + ';');
+    });
+
+    lines.push('}');
+    return lines;
+  }
+
+  /* proxy_cache_path is a top-level (http-context) directive that
+     defines the shared-memory keys_zone a location later references by
+     name via proxy_cache. */
+  function buildCacheTopBlock() {
+    var cpath = (cachePath.value || '').trim() || '/var/cache/nginx/mycache';
+    var zone = (cacheZoneName.value || '').trim() || 'mycache';
+    var zoneSize = (cacheZoneSize.value || '').trim() || '10m';
+    var maxSize = (cacheMaxSize.value || '').trim() || '1g';
+    var inactive = (cacheInactive.value || '').trim() || '60m';
+
+    var lines = [];
+    lines.push('# Proxy cache zone (proxy_cache_path belongs in the http {} context, above your server {} blocks)');
+    lines.push('proxy_cache_path ' + cpath + ' levels=1:2 keys_zone=' + zone + ':' + zoneSize +
+      ' max_size=' + maxSize + ' inactive=' + inactive + ' use_temp_path=off;');
+    return lines;
+  }
+
   function proxyLocationLines(depth) {
-    var upstream = (proxyUpstream.value || '').trim() || '127.0.0.1:3000';
+    var target = toggleUpstream.checked
+      ? upstreamName()
+      : ((proxyUpstream.value || '').trim() || '127.0.0.1:3000');
     var ws = proxyWebsocket.checked;
     var pad = indent(depth);
     var lines = [];
     lines.push(pad + 'location / {');
-    lines.push(pad + '    proxy_pass http://' + upstream + ';');
+    lines.push(pad + '    proxy_pass http://' + target + ';');
     lines.push(pad + '    proxy_set_header Host $host;');
     lines.push(pad + '    proxy_set_header X-Real-IP $remote_addr;');
     lines.push(pad + '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;');
@@ -119,6 +213,16 @@
       lines.push(pad + '    proxy_http_version 1.1;');
       lines.push(pad + '    proxy_set_header Upgrade $http_upgrade;');
       lines.push(pad + '    proxy_set_header Connection "upgrade";');
+    }
+    if (toggleCache.checked) {
+      var zone = (cacheZoneName.value || '').trim() || 'mycache';
+      var validOk = (cacheValidOk.value || '').trim() || '10m';
+      var valid404 = (cacheValid404.value || '').trim() || '1m';
+      lines.push(pad + '    proxy_cache ' + zone + ';');
+      lines.push(pad + '    proxy_cache_valid 200 302 ' + validOk + ';');
+      lines.push(pad + '    proxy_cache_valid 404 ' + valid404 + ';');
+      lines.push(pad + '    proxy_cache_bypass $http_cache_control;');
+      lines.push(pad + '    add_header X-Cache-Status $upstream_cache_status;');
     }
     lines.push(pad + '}');
     return lines;
@@ -207,6 +311,32 @@
     return lines;
   }
 
+  /* Real, correct gzip directives (http context). Brotli is NOT part of
+     stock nginx — it needs the third-party ngx_brotli module compiled
+     or loaded as a dynamic module — so that section is clearly labeled
+     and only emitted when the user explicitly opts in. */
+  function buildGzipBlock() {
+    var lines = [];
+    lines.push('# Gzip compression (belongs in the http {} context)');
+    lines.push('gzip on;');
+    lines.push('gzip_vary on;');
+    lines.push('gzip_proxied any;');
+    lines.push('gzip_comp_level 6;');
+    lines.push('gzip_min_length 256;');
+    lines.push('gzip_types ' + COMPRESSIBLE_TYPES + ';');
+
+    if (gzipBrotli.checked) {
+      lines.push('');
+      lines.push('# Brotli compression — requires the third-party ngx_brotli module');
+      lines.push('# (https://github.com/google/ngx_brotli), which is NOT bundled with');
+      lines.push('# stock nginx. Remove this block if your nginx build doesn\'t have it.');
+      lines.push('brotli on;');
+      lines.push('brotli_comp_level 6;');
+      lines.push('brotli_types ' + COMPRESSIBLE_TYPES + ';');
+    }
+    return lines;
+  }
+
   /* =================================================================
      SYNTAX HIGHLIGHTING (line-based: comments, directives, vars, strings, braces)
      ================================================================= */
@@ -253,16 +383,24 @@
     // Panel visibility follows the toggles.
     panelStatic.hidden    = !toggleStatic.checked;
     panelProxy.hidden     = !toggleProxy.checked;
+    panelUpstream.hidden  = !toggleUpstream.checked;
+    panelCache.hidden     = !toggleCache.checked;
     panelSsl.hidden       = !toggleSsl.checked;
     panelRateLimit.hidden = !toggleRateLimit.checked;
+    panelGzip.hidden      = !toggleGzip.checked;
 
-    var enabledCount = [toggleStatic, toggleProxy, toggleSsl, toggleRateLimit]
-      .filter(function (t) { return t.checked; }).length;
+    var allToggles = [toggleStatic, toggleProxy, toggleUpstream, toggleCache,
+      toggleSsl, toggleRateLimit, toggleGzip];
+    var enabledCount = allToggles.filter(function (t) { return t.checked; }).length;
 
     emptyOptions.hidden = enabledCount > 0;
 
-    // Build combined config.
+    // Build combined config. Top-level (http-context) directives first,
+    // then the server {} blocks, matching how a real nginx.conf reads.
     var blocks = [];
+    if (toggleGzip.checked)      blocks.push(buildGzipBlock());
+    if (toggleUpstream.checked)  blocks.push(buildUpstreamBlock());
+    if (toggleCache.checked)     blocks.push(buildCacheTopBlock());
     if (toggleStatic.checked)    blocks.push(buildStaticBlock());
     if (toggleProxy.checked)     blocks.push(buildProxyBlock());
     if (toggleSsl.checked)       blocks.push(buildSslBlock());
@@ -311,7 +449,10 @@
         staticSite: toggleStatic.checked,
         proxy: toggleProxy.checked,
         ssl: toggleSsl.checked,
-        rateLimit: toggleRateLimit.checked
+        rateLimit: toggleRateLimit.checked,
+        upstream: toggleUpstream.checked,
+        cache: toggleCache.checked,
+        gzip: toggleGzip.checked
       },
       staticRoot: staticRoot.value,
       staticIndex: staticIndex.value,
@@ -323,7 +464,20 @@
       sslRedirect: sslRedirect.checked,
       rlZoneName: rlZoneName.value,
       rlRate: rlRate.value,
-      rlBurst: rlBurst.value
+      rlBurst: rlBurst.value,
+      ulName: ulName.value,
+      ulMethod: ulMethod.value,
+      ulServers: ulServers.value,
+      ulMaxFails: ulMaxFails.value,
+      ulFailTimeout: ulFailTimeout.value,
+      cachePath: cachePath.value,
+      cacheZoneName: cacheZoneName.value,
+      cacheZoneSize: cacheZoneSize.value,
+      cacheMaxSize: cacheMaxSize.value,
+      cacheInactive: cacheInactive.value,
+      cacheValidOk: cacheValidOk.value,
+      cacheValid404: cacheValid404.value,
+      gzipBrotli: gzipBrotli.checked
     });
   }
   var persistDebounced = WUS.debounce(persist, 400);
@@ -340,6 +494,9 @@
       toggleProxy.checked     = !!saved.toggles.proxy;
       toggleSsl.checked       = !!saved.toggles.ssl;
       toggleRateLimit.checked = !!saved.toggles.rateLimit;
+      toggleUpstream.checked  = !!saved.toggles.upstream;
+      toggleCache.checked     = !!saved.toggles.cache;
+      toggleGzip.checked      = !!saved.toggles.gzip;
     }
 
     if (typeof saved.staticRoot === 'string') staticRoot.value = saved.staticRoot;
@@ -356,6 +513,22 @@
     if (typeof saved.rlZoneName === 'string') rlZoneName.value = saved.rlZoneName;
     if (saved.rlRate) rlRate.value = saved.rlRate;
     if (saved.rlBurst) rlBurst.value = saved.rlBurst;
+
+    if (typeof saved.ulName === 'string') ulName.value = saved.ulName;
+    if (typeof saved.ulMethod === 'string') ulMethod.value = saved.ulMethod;
+    if (typeof saved.ulServers === 'string') ulServers.value = saved.ulServers;
+    if (saved.ulMaxFails) ulMaxFails.value = saved.ulMaxFails;
+    if (typeof saved.ulFailTimeout === 'string' && saved.ulFailTimeout) ulFailTimeout.value = saved.ulFailTimeout;
+
+    if (typeof saved.cachePath === 'string' && saved.cachePath) cachePath.value = saved.cachePath;
+    if (typeof saved.cacheZoneName === 'string' && saved.cacheZoneName) cacheZoneName.value = saved.cacheZoneName;
+    if (typeof saved.cacheZoneSize === 'string' && saved.cacheZoneSize) cacheZoneSize.value = saved.cacheZoneSize;
+    if (typeof saved.cacheMaxSize === 'string' && saved.cacheMaxSize) cacheMaxSize.value = saved.cacheMaxSize;
+    if (typeof saved.cacheInactive === 'string' && saved.cacheInactive) cacheInactive.value = saved.cacheInactive;
+    if (typeof saved.cacheValidOk === 'string' && saved.cacheValidOk) cacheValidOk.value = saved.cacheValidOk;
+    if (typeof saved.cacheValid404 === 'string' && saved.cacheValid404) cacheValid404.value = saved.cacheValid404;
+
+    gzipBrotli.checked = !!saved.gzipBrotli;
 
     render();
   }
@@ -400,12 +573,17 @@
      WIRING
      ================================================================= */
   [serverNameEl, httpPortEl, staticRoot, staticIndex, proxyUpstream,
-   sslCert, sslKey, rlZoneName, rlRate, rlBurst].forEach(function (el) {
+   sslCert, sslKey, rlZoneName, rlRate, rlBurst,
+   ulName, ulServers, ulMaxFails, ulFailTimeout,
+   cachePath, cacheZoneName, cacheZoneSize, cacheMaxSize, cacheInactive,
+   cacheValidOk, cacheValid404].forEach(function (el) {
     el.addEventListener('input', render);
   });
 
   [toggleStatic, toggleProxy, toggleSsl, toggleRateLimit,
-   staticSpaFallback, proxyWebsocket, sslRedirect].forEach(function (el) {
+   toggleUpstream, toggleCache, toggleGzip,
+   staticSpaFallback, proxyWebsocket, sslRedirect,
+   ulMethod, gzipBrotli].forEach(function (el) {
     el.addEventListener('change', render);
   });
 

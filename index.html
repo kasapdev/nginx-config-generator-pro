@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#08090d">
-  <meta name="description" content="Visually build correct nginx server blocks — static/SPA sites, reverse proxy, SSL/TLS, rate limiting — fast, private, and fully offline.">
+  <meta name="description" content="Visually build correct nginx server blocks — static/SPA sites, reverse proxy with load-balanced upstreams, caching, SSL/TLS, gzip/Brotli compression, rate limiting — fast, private, and fully offline.">
   <title>Nginx Config Generator — Web Utility Suite</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="assets/css/base.css">
@@ -87,6 +87,27 @@
           </span>
           <span class="secondary">Rate limiting</span>
         </label>
+        <label class="check">
+          <span class="switch">
+            <input type="checkbox" id="toggleUpstream">
+            <span class="track"></span><span class="thumb"></span>
+          </span>
+          <span class="secondary">Load balancing / upstream</span>
+        </label>
+        <label class="check">
+          <span class="switch">
+            <input type="checkbox" id="toggleCache">
+            <span class="track"></span><span class="thumb"></span>
+          </span>
+          <span class="secondary">Caching</span>
+        </label>
+        <label class="check">
+          <span class="switch">
+            <input type="checkbox" id="toggleGzip">
+            <span class="track"></span><span class="thumb"></span>
+          </span>
+          <span class="secondary">Gzip / Brotli compression</span>
+        </label>
       </div>
     </section>
 
@@ -129,6 +150,78 @@
           </label>
         </section>
 
+        <!-- Load balancing / upstream -->
+        <section id="panelUpstream" class="panel section-panel" hidden>
+          <h2 class="pane-title">Load balancing / upstream</h2>
+          <div class="field">
+            <label for="ulName">Upstream name</label>
+            <input type="text" id="ulName" class="mono" value="backend">
+          </div>
+          <div class="field">
+            <label for="ulMethod">Load-balancing method</label>
+            <select id="ulMethod" class="mono">
+              <option value="">Round-robin (default — no directive needed)</option>
+              <option value="least_conn">Least connections (least_conn)</option>
+              <option value="ip_hash">IP hash (ip_hash)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ulServers">Servers <span class="muted">(one <code class="mono">host:port</code> per line — optionally add <code class="mono">weight=N</code>, <code class="mono">backup</code>, or <code class="mono">down</code>)</span></label>
+            <textarea id="ulServers" class="mono" rows="4" spellcheck="false" placeholder="10.0.0.1:3000 weight=3&#10;10.0.0.2:3000&#10;10.0.0.3:3000 backup"></textarea>
+          </div>
+          <div class="row wrap gap-3">
+            <div class="field flex-1">
+              <label for="ulMaxFails">max_fails</label>
+              <input type="number" id="ulMaxFails" min="1" max="100" value="3">
+            </div>
+            <div class="field flex-1">
+              <label for="ulFailTimeout">fail_timeout</label>
+              <input type="text" id="ulFailTimeout" class="mono" value="30s">
+            </div>
+          </div>
+          <p class="muted" style="margin:0;font-size:12px">Applied to each server line that doesn't already specify its own <code class="mono">max_fails</code>/<code class="mono">fail_timeout</code> (skipped for <code class="mono">backup</code>/<code class="mono">down</code> servers). When enabled, the Reverse proxy block's <code class="mono">proxy_pass</code> targets this upstream group by name instead of a single host.</p>
+        </section>
+
+        <!-- Caching -->
+        <section id="panelCache" class="panel section-panel" hidden>
+          <h2 class="pane-title">Caching</h2>
+          <div class="field">
+            <label for="cachePath">Cache path (disk)</label>
+            <input type="text" id="cachePath" class="mono" value="/var/cache/nginx/mycache">
+          </div>
+          <div class="row wrap gap-3">
+            <div class="field flex-1">
+              <label for="cacheZoneName">Zone name</label>
+              <input type="text" id="cacheZoneName" class="mono" value="mycache">
+            </div>
+            <div class="field flex-1">
+              <label for="cacheZoneSize">Zone size</label>
+              <input type="text" id="cacheZoneSize" class="mono" value="10m">
+            </div>
+          </div>
+          <div class="row wrap gap-3">
+            <div class="field flex-1">
+              <label for="cacheMaxSize">max_size</label>
+              <input type="text" id="cacheMaxSize" class="mono" value="1g">
+            </div>
+            <div class="field flex-1">
+              <label for="cacheInactive">inactive</label>
+              <input type="text" id="cacheInactive" class="mono" value="60m">
+            </div>
+          </div>
+          <div class="row wrap gap-3">
+            <div class="field flex-1">
+              <label for="cacheValidOk">Cache 200/302 for</label>
+              <input type="text" id="cacheValidOk" class="mono" value="10m">
+            </div>
+            <div class="field flex-1">
+              <label for="cacheValid404">Cache 404 for</label>
+              <input type="text" id="cacheValid404" class="mono" value="1m">
+            </div>
+          </div>
+          <p class="muted" style="margin:0;font-size:12px">Emits a top-level <code class="mono">proxy_cache_path</code> zone plus <code class="mono">proxy_cache</code>/<code class="mono">proxy_cache_valid</code> lines inside the Reverse proxy block's <code class="mono">location</code> — enable Reverse proxy too so they're actually applied.</p>
+        </section>
+
         <!-- SSL -->
         <section id="panelSsl" class="panel section-panel" hidden>
           <h2 class="pane-title">SSL / TLS</h2>
@@ -166,6 +259,19 @@
               <input type="number" id="rlBurst" min="0" max="10000" value="20">
             </div>
           </div>
+        </section>
+
+        <!-- Gzip / Brotli compression -->
+        <section id="panelGzip" class="panel section-panel" hidden>
+          <h2 class="pane-title">Gzip / Brotli compression</h2>
+          <p class="muted" style="margin-top:0">Belongs in the <code class="mono">http {}</code> context (e.g. <code class="mono">/etc/nginx/conf.d/gzip.conf</code>, included from <code class="mono">http {}</code>).</p>
+          <label class="check">
+            <span class="switch">
+              <input type="checkbox" id="gzipBrotli">
+              <span class="track"></span><span class="thumb"></span>
+            </span>
+            <span class="secondary">Also include Brotli (requires the third-party <code class="mono">ngx_brotli</code> module — <strong>not</strong> bundled with stock nginx)</span>
+          </label>
         </section>
 
         <div id="emptyOptions" class="panel empty">
